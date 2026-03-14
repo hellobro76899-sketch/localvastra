@@ -1,96 +1,113 @@
-"use client";
+'use client'
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { useAuth } from "@/contexts/AuthContext";
-import { useToast } from "@/hooks/use-toast";
-import { createClient } from "@/lib/supabase/client";
-import { Loader2, X } from "lucide-react";
+import { useState } from 'react'
+import { useRouter } from 'next/navigation'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { createClient } from '@/lib/supabase/client'
+import { Loader2, X } from 'lucide-react'
 
 interface Variant {
-  size: string;
-  color: string;
-  stock: number;
-  price: number;
+  size: string
+  color: string
+  stock: number
+  price: number
 }
 
-const SIZES = ["XS", "S", "M", "L", "XL", "XXL"];
-const COLORS = ["Black", "White", "Red", "Blue", "Green", "Yellow", "Pink", "Orange", "Navy", "Grey"];
-const CATEGORIES = ["mens", "womens"];
+const SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL']
+const COLORS = [
+  'Black',
+  'White',
+  'Red',
+  'Blue',
+  'Green',
+  'Yellow',
+  'Pink',
+  'Orange',
+  'Navy',
+  'Grey',
+]
+const CATEGORIES = ['mens', 'womens']
 
 export default function AddProductPage() {
-  const { user } = useAuth();
-  const router = useRouter();
-  const { toast } = useToast();
-  const supabase = createClient();
+  const router = useRouter()
+  const supabase = createClient()
 
-  const [loading, setLoading] = useState(false);
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [basePrice, setBasePrice] = useState("");
-  const [category, setCategory] = useState("");
-  const [variants, setVariants] = useState<Variant[]>([]);
-  const [imageUrls, setImageUrls] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false)
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [basePrice, setBasePrice] = useState('')
+  const [category, setCategory] = useState('')
+  const [variants, setVariants] = useState<Variant[]>([])
+  const [imageUrls, setImageUrls] = useState<string[]>([])
+  const [error, setError] = useState<string | null>(null)
 
   const handleAddVariant = () => {
-    setVariants([...variants, { size: "", color: "", stock: 0, price: parseFloat(basePrice) || 0 }]);
-  };
+    setVariants([
+      ...variants,
+      { size: '', color: '', stock: 0, price: parseFloat(basePrice) || 0 },
+    ])
+  }
 
   const handleRemoveVariant = (index: number) => {
-    setVariants(variants.filter((_, i) => i !== index));
-  };
+    setVariants(variants.filter((_, i) => i !== index))
+  }
 
-  const handleVariantChange = (index: number, field: string, value: string | number) => {
-    const newVariants = [...variants];
-    newVariants[index] = { ...newVariants[index], [field]: value };
-    setVariants(newVariants);
-  };
+  const handleVariantChange = (
+    index: number,
+    field: string,
+    value: string | number
+  ) => {
+    const newVariants = [...variants]
+    newVariants[index] = { ...newVariants[index], [field]: value }
+    setVariants(newVariants)
+  }
 
   const handleImageUrl = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const url = e.target.value.trim();
+    const url = e.target.value.trim()
     if (url && !imageUrls.includes(url)) {
-      setImageUrls([...imageUrls, url]);
-      e.target.value = "";
+      setImageUrls([...imageUrls, url])
+      e.target.value = ''
     }
-  };
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+    e.preventDefault()
+    setError(null)
+
+    // Get current user
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
 
     if (!user) {
-      toast({ title: "Error", description: "Not authenticated", variant: "destructive" });
-      return;
+      setError('Not authenticated')
+      return
     }
 
     if (!name.trim() || !description.trim() || !category || variants.length === 0) {
-      toast({
-        title: "Error",
-        description: "Fill all required fields and add at least one variant",
-        variant: "destructive",
-      });
-      return;
+      setError('Fill all required fields and add at least one variant')
+      return
     }
 
-    setLoading(true);
+    setLoading(true)
     try {
       // Create product
       const { data: product, error: productError } = await supabase
-        .from("products")
+        .from('products')
         .insert({
           name: name.trim(),
           description: description.trim(),
-          price: parseFloat(basePrice) || 0,
+          base_price: parseFloat(basePrice) || 0,
           category: category.toLowerCase(),
           images: imageUrls,
           seller_id: user.id,
         })
         .select()
-        .single();
+        .single()
 
-      if (productError) throw productError;
+      if (productError) throw productError
 
       // Create variants
       const variantData = variants.map((v) => ({
@@ -99,29 +116,32 @@ export default function AddProductPage() {
         color: v.color,
         stock: v.stock,
         price: v.price,
-      }));
+      }))
 
-      const { error: variantError } = await supabase.from("product_variants").insert(variantData);
+      const { error: variantError } = await supabase
+        .from('product_variants')
+        .insert(variantData)
 
-      if (variantError) throw variantError;
+      if (variantError) throw variantError
 
-      toast({ title: "Success", description: "Product added successfully" });
-      router.push("/seller/manage-products");
-    } catch (error) {
-      console.error("[v0] Error adding product:", error);
-      toast({
-        title: "Error",
-        description: error instanceof Error ? error.message : "Failed to add product",
-        variant: "destructive",
-      });
+      router.push('/seller/manage-products')
+    } catch (err) {
+      console.error('[v0] Error adding product:', err)
+      setError(err instanceof Error ? err.message : 'Failed to add product')
     } finally {
-      setLoading(false);
+      setLoading(false)
     }
-  };
+  }
 
   return (
     <div className="max-w-4xl mx-auto p-8">
       <h1 className="text-3xl font-bold mb-8">Add New Product</h1>
+
+      {error && (
+        <div className="mb-6 p-4 bg-destructive/10 border border-destructive rounded-lg text-destructive">
+          {error}
+        </div>
+      )}
 
       <form onSubmit={handleSubmit} className="space-y-6">
         {/* Basic Info */}

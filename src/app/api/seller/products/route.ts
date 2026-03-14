@@ -1,53 +1,128 @@
-import { NextRequest, NextResponse } from "next/server";
-import { getDatabase, generateId } from "@/lib/db";
+import { createClient } from '@/lib/supabase/server'
+import { NextRequest, NextResponse } from 'next/server'
+
+export const dynamic = 'force-dynamic'
 
 export async function GET(request: NextRequest) {
-  const uid = request.nextUrl.searchParams.get("uid");
-  if (!uid) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
   try {
-    const db = getDatabase();
-    const products = db.prepare("SELECT * FROM products WHERE seller_id = ?").all(uid) as any[];
-    return NextResponse.json(
-      products.map((p: any) => ({
-        id: p.id,
-        name: p.name,
-        price: p.price,
-        images: JSON.parse(p.images || "[]"),
-        inStock: !!p.in_stock,
-      }))
-    );
+    const supabase = await createClient()
+
+    // Get user
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+
+    if (!user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
+    // Get seller products
+    const { data: products, error } = await supabase
+      .from('products')
+      .select(
+        `
+        *,
+        product_variants(id, size, color, price, stock)
+      `
+      )
+      .eq('seller_id', user.id)
+      .order('created_at', { ascending: false })
+
+    if (error) throw error
+
+    return NextResponse.json(products)
   } catch (error) {
-    console.error("Seller products error:", error);
-    return NextResponse.json({ error: "Failed to fetch" }, { status: 500 });
+    console.error('[v0] Fetch products error:', error)
+    return NextResponse.json(
+      { error: 'Failed to fetch products' },
+      { status: 500 }
+    )
   }
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { sellerId, shopId, name, description, price, category, images, inStock } = body;
-    if (!sellerId || !shopId || !name || price == null) {
-      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
+    const supabase = await createClient()
+
+    // Get user
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+
+    if (!user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
     }
-    const db = getDatabase();
-    const id = generateId();
-    db.prepare(
-      "INSERT INTO products (id, seller_id, shop_id, name, description, price, category, images, in_stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    ).run(
-      id,
-      sellerId,
-      shopId,
-      String(name),
-      String(description || ""),
-      parseFloat(price),
-      String(category || "general"),
-      JSON.stringify(Array.isArray(images) ? images : []),
-      inStock ? 1 : 0
-    );
-    return NextResponse.json({ success: true });
+
+    // Check if seller
+    const { data: seller } = await supabase
+      .from('sellers')
+      .select('id')
+      .eq('id', user.id)
+      .single()
+
+    if (!seller) {
+      return NextResponse.json(
+        { error: 'Not a seller' },
+        { status: 403 }
+      )
+    }
+
+    const body = await request.json()
+    const { name, description, category, base_price, images, variants } = body
+
+    // Validate input
+    if (!name || !category || base_price === null) {
+      return NextResponse.json(
+        { error: 'Missing required fields' },
+        { status: 400 }
+      )
+    }
+
+    // Create product
+    const { data: product, error: productError } = await supabase
+      .from('products')
+      .insert({
+        seller_id: user.id,
+        name,
+        description,
+        category,
+        base_price,
+        images: images || [],
+      })
+      .select()
+      .single()
+
+    if (productError) throw productError
+
+    // Create variants
+    if (variants && variants.length > 0) {
+      const variantData = variants.map((v: any) => ({
+        product_id: product.id,
+        size: v.size,
+        color: v.color,
+        price: v.price || base_price,
+        stock: v.stock || 0,
+      }))
+
+      const { error: variantError } = await supabase
+        .from('product_variants')
+        .insert(variantData)
+
+      if (variantError) throw variantError
+    }
+
+    return NextResponse.json(product)
   } catch (error) {
-    console.error("Create product error:", error);
-    return NextResponse.json({ error: "Failed to create" }, { status: 500 });
+    console.error('[v0] Product creation error:', error)
+    return NextResponse.json(
+      { error: 'Failed to create product' },
+      { status: 500 }
+    )
   }
 }

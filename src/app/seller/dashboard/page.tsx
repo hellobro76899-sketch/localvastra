@@ -1,66 +1,73 @@
-"use client";
+'use client'
 
-import { useState, useEffect } from "react";
-import Link from "next/link";
-import { motion } from "framer-motion";
-import { Package, Store, TrendingUp, ShoppingCart } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { useAuth } from "@/contexts/AuthContext";
-import { createClient } from "@/lib/supabase/client";
-import { Loader2 } from "lucide-react";
+import { useState, useEffect } from 'react'
+import Link from 'next/link'
+import { motion } from 'framer-motion'
+import { Package, Store, TrendingUp, ShoppingCart } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { createClient } from '@/lib/supabase/client'
+import { Loader2 } from 'lucide-react'
 
 export default function SellerDashboardPage() {
-  const { user } = useAuth();
-  const supabase = createClient();
+  const supabase = createClient()
+  const [user, setUser] = useState<any>(null)
   const [stats, setStats] = useState({
     products: 0,
     totalRevenue: 0,
     orders: 0,
     shopConfigured: false,
-  });
-  const [loading, setLoading] = useState(true);
+  })
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    if (!user) return;
+    checkUserAndFetchStats()
+  }, [])
 
-    const fetchStats = async () => {
-      try {
-        // Fetch product count
-        const { data: products, error: productError } = await supabase
-          .from("products")
-          .select("id", { count: "exact" })
-          .eq("seller_id", user.id);
+  const checkUserAndFetchStats = async () => {
+    try {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser()
 
-        // Fetch seller info
-        const { data: seller, error: sellerError } = await supabase
-          .from("sellers")
-          .select("*")
-          .eq("id", user.id)
-          .single();
+      if (!user) return
 
-        // Fetch orders
-        const { data: orders, error: ordersError } = await supabase
-          .from("orders")
-          .select("total_amount")
-          .eq("seller_id", user.id);
+      setUser(user)
 
-        const totalRevenue = orders?.reduce((sum, order) => sum + (order.total_amount || 0), 0) || 0;
+      // Fetch product count
+      const { data: products } = await supabase
+        .from('products')
+        .select('id', { count: 'exact' })
+        .eq('seller_id', user.id)
 
-        setStats({
-          products: products?.length || 0,
-          totalRevenue,
-          orders: orders?.length || 0,
-          shopConfigured: !!seller?.shop_name,
-        });
-      } catch (error) {
-        console.error("[v0] Error fetching stats:", error);
-      } finally {
-        setLoading(false);
-      }
-    };
+      // Fetch seller info
+      const { data: seller } = await supabase
+        .from('sellers')
+        .select('*')
+        .eq('id', user.id)
+        .single()
 
-    fetchStats();
-  }, [user, supabase]);
+      // Fetch orders
+      const { data: orders } = await supabase
+        .from('orders')
+        .select('total_amount')
+        .eq('seller_id', user.id)
+
+      const totalRevenue =
+        orders?.reduce((sum, order) => sum + (order.total_amount || 0), 0) ||
+        0
+
+      setStats({
+        products: products?.length || 0,
+        totalRevenue,
+        orders: orders?.length || 0,
+        shopConfigured: !!seller?.shop_name,
+      })
+    } catch (error) {
+      console.error('[v0] Error fetching stats:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
 
   if (loading) {
     return (
