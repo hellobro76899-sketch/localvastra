@@ -1,6 +1,7 @@
 "use client";
 
 import React, { createContext, useContext, useEffect, useState } from "react";
+import { createClient } from "@/lib/supabase/client";
 import type { UserRole } from "@/types";
 
 export interface AppUser {
@@ -37,6 +38,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AppUser | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  const supabase = createClient();
 
   const buildUser = (data: { id: string; email: string; name: string; role: UserRole }): AppUser => ({
     id: data.id,
@@ -57,59 +59,129 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Check session on mount
   useEffect(() => {
-    fetch("/api/auth/me")
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.user) {
-          setUser(buildUser(data.user));
-          setUserProfile(buildProfile(data.user));
+    const checkSession = async () => {
+      try {
+        const { data: { user: authUser } } = await supabase.auth.getUser();
+        if (authUser) {
+          // Get user profile from database
+          const { data, error } = await supabase
+            .from("users")
+            .select("*")
+            .eq("id", authUser.id)
+            .single();
+
+          if (data && !error) {
+            const appUser = buildUser(data);
+            setUser(appUser);
+            setUserProfile(buildProfile(data));
+          }
         }
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+      } catch (error) {
+        console.error("[v0] Error checking session:", error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    checkSession();
+  }, [supabase]);
 
   const signUp = async (email: string, password: string, name: string, role: UserRole) => {
-    const res = await fetch("/api/auth/signup", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password, name, role }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Signup failed");
-    setUser(buildUser(data.user));
-    setUserProfile(buildProfile(data.user));
+    try {
+      // Sign up with Supabase Auth
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: { name, role },
+          emailRedirectTo: `${window.location.origin}/`,
+        },
+      });
+
+      if (authError) throw authError;
+      if (!authData.user) throw new Error("Signup failed");
+
+      // Create user record in database
+      const { data: userData, error: dbError } = await supabase
+        .from("users")
+        .insert({
+          id: authData.user.id,
+          email,
+          name,
+          role,
+        })
+        .select()
+        .single();
+
+      if (dbError) throw dbError;
+
+      const appUser = buildUser(userData);
+      setUser(appUser);
+      setUserProfile(buildProfile(userData));
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : "Signup failed");
+    }
   };
 
   const signIn = async (email: string, password: string) => {
-    const res = await fetch("/api/auth/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Login failed");
-    setUser(buildUser(data.user));
-    setUserProfile(buildProfile(data.user));
+    try {
+      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (authError) throw authError;
+      if (!authData.user) throw new Error("Login failed");
+
+      // Get user profile from database
+      const { data: userData, error: dbError } = await supabase
+        .from("users")
+        .select("*")
+        .eq("id", authData.user.id)
+        .single();
+
+      if (dbError) throw dbError;
+
+      const appUser = buildUser(userData);
+      setUser(appUser);
+      setUserProfile(buildProfile(userData));
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : "Login failed");
+    }
   };
 
   const logout = async () => {
-    await fetch("/api/auth/logout", { method: "POST" });
-    setUser(null);
-    setUserProfile(null);
+    try {
+      await supabase.auth.signOut();
+      setUser(null);
+      setUserProfile(null);
+    } catch (error) {
+      console.error("[v0] Logout error:", error);
+    }
   };
 
   const resetPassword = async (_email: string) => {
-    // Not applicable for SQL-backed auth, but provide a graceful message
     throw new Error("Password reset is not available. Please contact support.");
   };
 
   const refreshProfile = async () => {
-    const res = await fetch("/api/auth/me");
-    const data = await res.json();
-    if (data.user) {
-      setUser(buildUser(data.user));
-      setUserProfile(buildProfile(data.user));
+    try {
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+      if (authUser) {
+        const { data, error } = await supabase
+          .from("users")
+          .select("*")
+          .eq("id", authUser.id)
+          .single();
+
+        if (data && !error) {
+          const appUser = buildUser(data);
+          setUser(appUser);
+          setUserProfile(buildProfile(data));
+        }
+      }
+    } catch (error) {
+      console.error("[v0] Error refreshing profile:", error);
     }
   };
 

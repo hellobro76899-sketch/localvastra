@@ -1,41 +1,89 @@
-"use client";
+'use client'
 
-import { useEffect } from "react";
-import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-import { motion } from "framer-motion";
-import { LayoutDashboard, Plus, Package, Store, LogOut } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { useAuth } from "@/contexts/AuthContext";
+import { useEffect, useState } from 'react'
+import Link from 'next/link'
+import { usePathname, useRouter } from 'next/navigation'
+import { motion } from 'framer-motion'
+import {
+  LayoutDashboard,
+  Plus,
+  Package,
+  Store,
+  LogOut,
+} from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { createClient } from '@/lib/supabase/client'
 
 const navItems = [
-  { href: "/seller/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/seller/add-product", label: "Add Product", icon: Plus },
-  { href: "/seller/manage-products", label: "Manage Products", icon: Package },
-  { href: "/seller/shop-profile", label: "Shop Profile", icon: Store },
-];
+  { href: '/seller/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { href: '/seller/add-product', label: 'Add Product', icon: Plus },
+  {
+    href: '/seller/manage-products',
+    label: 'Manage Products',
+    icon: Package,
+  },
+  { href: '/seller/shop-profile', label: 'Shop Profile', icon: Store },
+]
 
 export default function SellerLayout({
   children,
 }: {
-  children: React.ReactNode;
+  children: React.ReactNode
 }) {
-  const { user, userProfile, loading, logout } = useAuth();
-  const pathname = usePathname();
-  const router = useRouter();
+  const [user, setUser] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
+  const pathname = usePathname()
+  const router = useRouter()
 
   useEffect(() => {
-    if (!loading && (!user || userProfile?.role !== "seller")) {
-      router.push("/login");
-    }
-  }, [user, userProfile, loading, router]);
+    checkAuth()
+  }, [])
 
-  if (loading || !user || userProfile?.role !== "seller") {
+  const checkAuth = async () => {
+    try {
+      const supabase = createClient()
+      const {
+        data: { user },
+      } = await supabase.auth.getUser()
+
+      if (!user) {
+        router.push('/login')
+        return
+      }
+
+      // Check if seller
+      const { data: seller } = await supabase
+        .from('sellers')
+        .select('id')
+        .eq('id', user.id)
+        .single()
+
+      if (!seller) {
+        router.push('/')
+        return
+      }
+
+      setUser(user)
+    } catch (error) {
+      console.error('[v0] Auth check error:', error)
+      router.push('/login')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleLogout = async () => {
+    const supabase = createClient()
+    await supabase.auth.signOut()
+    router.push('/')
+  }
+
+  if (loading || !user) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <p className="text-muted-foreground">Loading...</p>
       </div>
-    );
+    )
   }
 
   return (
@@ -65,7 +113,11 @@ export default function SellerLayout({
           })}
         </nav>
         <div className="p-4 border-t">
-          <Button variant="ghost" className="w-full justify-start gap-3" onClick={() => logout()}>
+          <Button
+            variant="ghost"
+            className="w-full justify-start gap-3"
+            onClick={handleLogout}
+          >
             <LogOut className="h-5 w-5" />
             Logout
           </Button>
@@ -73,5 +125,5 @@ export default function SellerLayout({
       </aside>
       <main className="flex-1 overflow-auto">{children}</main>
     </div>
-  );
+  )
 }

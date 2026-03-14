@@ -1,49 +1,64 @@
-import { NextRequest, NextResponse } from "next/server";
-import { getDatabase } from "@/lib/db";
+import { createClient } from '@/lib/supabase/server'
+import { NextRequest, NextResponse } from 'next/server'
+
+export const dynamic = 'force-dynamic'
 
 export async function GET(
   request: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
-    const db = getDatabase();
-    const product = db.prepare("SELECT * FROM products WHERE id = ?").get(params.id) as any;
+    const supabase = await createClient()
+    const { id } = params
 
-    if (!product) {
-      return NextResponse.json({ error: "Product not found" }, { status: 404 });
+    const { data: product, error } = await supabase
+      .from('products')
+      .select(
+        `
+        *,
+        product_variants(id, size, color, price, stock),
+        sellers(shop_name, shop_description, phone, address)
+      `
+      )
+      .eq('id', id)
+      .single()
+
+    if (error || !product) {
+      return NextResponse.json(
+        { error: 'Product not found' },
+        { status: 404 }
+      )
     }
 
-    const data: any = {
+    // Transform data
+    const formattedProduct = {
       id: product.id,
-      sellerId: product.seller_id,
-      shopId: product.shop_id,
       name: product.name,
       description: product.description,
-      price: product.price,
       category: product.category,
-      images: JSON.parse(product.images || "[]"),
-      inStock: !!product.in_stock,
-      createdAt: product.created_at,
-      updatedAt: product.updated_at,
-    };
-
-    if (product.shop_id) {
-      const shop = db.prepare("SELECT * FROM shops WHERE id = ?").get(product.shop_id) as any;
-      if (shop) {
-        data.shop = {
-          id: shop.id,
-          name: shop.name,
-          description: shop.description,
-          address: shop.address,
-          phone: shop.phone,
-          location: shop.lat != null && shop.lng != null ? { lat: shop.lat, lng: shop.lng } : null,
-        };
-      }
+      base_price: product.base_price,
+      images: product.images || [],
+      created_at: product.created_at,
+      updated_at: product.updated_at,
+      seller_id: product.seller_id,
+      seller: product.sellers
+        ? {
+            id: product.seller_id,
+            shop_name: product.sellers.shop_name,
+            shop_description: product.sellers.shop_description,
+            phone: product.sellers.phone,
+            address: product.sellers.address,
+          }
+        : null,
+      variants: product.product_variants || [],
     }
 
-    return NextResponse.json(data);
+    return NextResponse.json(formattedProduct)
   } catch (error) {
-    console.error("Product API error:", error);
-    return NextResponse.json({ error: "Failed to fetch product" }, { status: 500 });
+    console.error('[v0] Product detail API error:', error)
+    return NextResponse.json(
+      { error: 'Failed to fetch product' },
+      { status: 500 }
+    )
   }
 }

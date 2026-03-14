@@ -1,85 +1,94 @@
-import { NextRequest, NextResponse } from "next/server";
-export const dynamic = "force-dynamic";
-import { getDatabase } from "@/lib/db";
-import { calculateDistance } from "@/lib/utils";
+import { createClient } from '@/lib/supabase/server'
+import { NextRequest, NextResponse } from 'next/server'
+
+export const dynamic = 'force-dynamic'
 
 export async function GET(request: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url);
-    const q = searchParams.get("q")?.toLowerCase() || "";
-    const category = searchParams.get("category") || "";
-    const minPrice = parseFloat(searchParams.get("minPrice") || "0");
-    const maxPrice = parseFloat(searchParams.get("maxPrice") || "1000000");
-    const lat = searchParams.get("lat");
-    const lng = searchParams.get("lng");
-    const radius = parseFloat(searchParams.get("radius") || "10");
-    const maxResults = parseInt(searchParams.get("limit") || "50");
+    const supabase = await createClient()
+    const { searchParams } = new URL(request.url)
+    const category = searchParams.get('category')
+    const search = searchParams.get('search')?.toLowerCase() || ''
+    const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 100)
 
-    const db = getDatabase();
+    let query = supabase.from('products').select(
+      `
+      id,
+      name,
+      description,
+      category,
+      base_price,
+      images,
+      created_at,
+      updated_at,
+      seller_id,
+      sellers(shop_name, shop_description, phone, address),
+      product_variants(id, size, color, price, stock)
+    `
+    )
 
-    const allProducts = db.prepare("SELECT * FROM products WHERE in_stock = 1 LIMIT ?").all(maxResults * 2) as any[];
-    const allShops = db.prepare("SELECT * FROM shops").all() as any[];
-    const shopsMap = new Map(allShops.map((s: any) => [s.id, s]));
+    if (category && category.toLowerCase() !== 'all') {
+      query = query.ilike('category', category)
+    }
 
-    let products = allProducts.map((p: any) => {
-      const shop = shopsMap.get(p.shop_id);
+    if (search) {
+      query = query.or(
+        `name.ilike.%${search}%,description.ilike.%${search}%`
+      )
+    }
+
+    query = query.limit(limit)
+
+    const { data: products, error } = await query
+
+    if (error) throw error
+
+    // Transform data
+    const formattedProducts = products?.map((product: any) => {
+      // Find minimum price from variants
+      const variantPrices = product.product_variants?.map(
+        (v: any) => v.price
+      ) || []
+      const minPrice =
+        variantPrices.length > 0
+          ? Math.min(...variantPrices)
+          : product.base_price
+
+      // Check if in stock
+      const inStock =
+        product.product_variants?.some((v: any) => v.stock > 0) || false
+
       return {
-        id: p.id,
-        sellerId: p.seller_id,
-        shopId: p.shop_id,
-        name: p.name,
-        description: p.description,
-        price: p.price,
-        category: p.category,
-        images: JSON.parse(p.images || "[]"),
-        inStock: !!p.in_stock,
-        createdAt: p.created_at,
-        updatedAt: p.updated_at,
-        shop: shop
+        id: product.id,
+        name: product.name,
+        description: product.description,
+        category: product.category,
+        price: minPrice,
+        base_price: product.base_price,
+        images: product.images || [],
+        inStock,
+        created_at: product.created_at,
+        updated_at: product.updated_at,
+        seller_id: product.seller_id,
+        seller: product.sellers
           ? {
-              id: shop.id,
-              name: shop.name,
-              description: shop.description,
-              address: shop.address,
-              phone: shop.phone,
-              location: shop.lat != null && shop.lng != null ? { lat: shop.lat, lng: shop.lng } : null,
+              id: product.seller_id,
+              shop_name: product.sellers.shop_name,
+              shop_description: product.sellers.shop_description,
+              phone: product.sellers.phone,
+              address: product.sellers.address,
             }
           : null,
-      };
-    });
+        variants: product.product_variants || [],
+      }
+    })
 
-    if (category) {
-      products = products.filter((p: any) => String(p.category || "").toLowerCase() === category.toLowerCase());
-    }
-    if (minPrice > 0 || maxPrice < 1000000) {
-      products = products.filter((p: any) => p.price >= minPrice && p.price <= maxPrice);
-    }
-    if (q) {
-      products = products.filter(
-        (p: any) =>
-          (p.name && String(p.name).toLowerCase().includes(q)) ||
-          (p.description && String(p.description).toLowerCase().includes(q)) ||
-          (p.shop?.name && String(p.shop.name).toLowerCase().includes(q))
-      );
-    }
-
-    if (lat && lng) {
-      const userLat = parseFloat(lat);
-      const userLng = parseFloat(lng);
-      products = products
-        .filter((p: any) => p.shop?.location?.lat && p.shop?.location?.lng)
-        .map((p: any) => ({
-          ...p,
-          distance: calculateDistance(userLat, userLng, p.shop.location.lat, p.shop.location.lng),
-        }))
-        .filter((p: any) => p.distance <= radius)
-        .sort((a: any, b: any) => (a.distance || 0) - (b.distance || 0));
-    }
-    products = products.slice(0, maxResults);
-
-    return NextResponse.json(products);
+    return NextResponse.json(formattedProducts || [])
   } catch (error) {
-    console.error("Products API error:", error);
-    return NextResponse.json({ error: "Failed to fetch products" }, { status: 500 });
+    console.error('[v0] Products API error:', error)
+    return NextResponse.json(
+      { error: 'Failed to fetch products' },
+      { status: 500 }
+    )
   }
 }

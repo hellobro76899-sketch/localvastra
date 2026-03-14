@@ -1,193 +1,330 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
-import Image from "next/image";
-import { motion } from "framer-motion";
-import { Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { CATEGORIES } from "@/types";
+import { createClient } from "@/lib/supabase/client";
+import { Loader2, X } from "lucide-react";
+
+interface Variant {
+  size: string;
+  color: string;
+  stock: number;
+  price: number;
+}
+
+const SIZES = ["XS", "S", "M", "L", "XL", "XXL"];
+const COLORS = ["Black", "White", "Red", "Blue", "Green", "Yellow", "Pink", "Orange", "Navy", "Grey"];
+const CATEGORIES = ["mens", "womens"];
 
 export default function AddProductPage() {
   const { user } = useAuth();
   const router = useRouter();
   const { toast } = useToast();
+  const supabase = createClient();
+
   const [loading, setLoading] = useState(false);
-  const [shop, setShop] = useState<{ id: string } | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [price, setPrice] = useState("");
+  const [basePrice, setBasePrice] = useState("");
   const [category, setCategory] = useState("");
-  const [inStock, setInStock] = useState(true);
-  const [images, setImages] = useState<File[]>([]);
-  const [previews, setPreviews] = useState<string[]>([]);
+  const [variants, setVariants] = useState<Variant[]>([]);
+  const [imageUrls, setImageUrls] = useState<string[]>([]);
 
-  useEffect(() => {
-    if (!user) return;
-    fetch("/api/seller/shop?uid=" + user.uid)
-      .then((r) => r.json())
-      .then((data) => setShop(data?.id ? data : null));
-  }, [user]);
-
-  const handleFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    setImages((prev) => [...prev, ...files]);
-    files.forEach((f) => {
-      const reader = new FileReader();
-      reader.onload = () => setPreviews((p) => [...p, reader.result as string]);
-      reader.readAsDataURL(f);
-    });
+  const handleAddVariant = () => {
+    setVariants([...variants, { size: "", color: "", stock: 0, price: parseFloat(basePrice) || 0 }]);
   };
 
-  const removeImage = (i: number) => {
-    setImages((prev) => prev.filter((_, j) => j !== i));
-    setPreviews((prev) => prev.filter((_, j) => j !== i));
+  const handleRemoveVariant = (index: number) => {
+    setVariants(variants.filter((_, i) => i !== index));
+  };
+
+  const handleVariantChange = (index: number, field: string, value: string | number) => {
+    const newVariants = [...variants];
+    newVariants[index] = { ...newVariants[index], [field]: value };
+    setVariants(newVariants);
+  };
+
+  const handleImageUrl = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const url = e.target.value.trim();
+    if (url && !imageUrls.includes(url)) {
+      setImageUrls([...imageUrls, url]);
+      e.target.value = "";
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user || !shop) {
-      toast({ title: "Error", description: "Create a shop profile first", variant: "destructive" });
+
+    if (!user) {
+      toast({ title: "Error", description: "Not authenticated", variant: "destructive" });
       return;
     }
-    const p = parseFloat(price);
-    if (isNaN(p) || p < 0) {
-      toast({ title: "Error", description: "Invalid price", variant: "destructive" });
-      return;
-    }
-    if (!name.trim() || !category) {
-      toast({ title: "Error", description: "Fill required fields", variant: "destructive" });
+
+    if (!name.trim() || !description.trim() || !category || variants.length === 0) {
+      toast({
+        title: "Error",
+        description: "Fill all required fields and add at least one variant",
+        variant: "destructive",
+      });
       return;
     }
 
     setLoading(true);
     try {
-      const uploadedUrls: string[] = [];
-      for (const file of images) {
-        const formData = new FormData();
-        formData.append("file", file);
-        formData.append("path", "products");
-        const res = await fetch("/api/upload", { method: "POST", body: formData });
-        const data = await res.json();
-        if (data.url) uploadedUrls.push(data.url);
-      }
-
-      const res = await fetch("/api/seller/products", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sellerId: user.uid,
-          shopId: shop.id,
+      // Create product
+      const { data: product, error: productError } = await supabase
+        .from("products")
+        .insert({
           name: name.trim(),
           description: description.trim(),
-          price: p,
+          price: parseFloat(basePrice) || 0,
           category: category.toLowerCase(),
-          images: uploadedUrls,
-          inStock,
-        }),
-      });
-      if (!res.ok) throw new Error("Failed to create");
-      toast({ title: "Success", description: "Product added" });
+          images: imageUrls,
+          seller_id: user.id,
+        })
+        .select()
+        .single();
+
+      if (productError) throw productError;
+
+      // Create variants
+      const variantData = variants.map((v) => ({
+        product_id: product.id,
+        size: v.size,
+        color: v.color,
+        stock: v.stock,
+        price: v.price,
+      }));
+
+      const { error: variantError } = await supabase.from("product_variants").insert(variantData);
+
+      if (variantError) throw variantError;
+
+      toast({ title: "Success", description: "Product added successfully" });
       router.push("/seller/manage-products");
-    } catch (err: unknown) {
-      toast({ title: "Error", description: (err as Error).message, variant: "destructive" });
+    } catch (error) {
+      console.error("[v0] Error adding product:", error);
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to add product",
+        variant: "destructive",
+      });
     } finally {
       setLoading(false);
     }
   };
 
-  if (!shop) {
-    return (
-      <div className="p-8">
-        <p className="text-muted-foreground">Set up your shop profile first.</p>
-        <Button className="mt-4" onClick={() => router.push("/seller/shop-profile")}>Go to Shop Profile</Button>
-      </div>
-    );
-  }
-
   return (
-    <div className="p-8 max-w-2xl">
-      <motion.h1 initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-2xl font-bold mb-6">
-        Add Product
-      </motion.h1>
+    <div className="max-w-4xl mx-auto p-8">
+      <h1 className="text-3xl font-bold mb-8">Add New Product</h1>
 
-      <motion.form
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        onSubmit={handleSubmit}
-        className="space-y-6"
-      >
-        <div>
-          <Label htmlFor="name">Product name *</Label>
-          <Input id="name" value={name} onChange={(e) => setName(e.target.value)} required />
-        </div>
-        <div>
-          <Label htmlFor="desc">Description</Label>
-          <textarea
-            id="desc"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            className="flex min-h-[100px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-          />
-        </div>
-        <div>
-          <Label htmlFor="price">Price (₹) *</Label>
-          <Input id="price" type="number" min={0} step={0.01} value={price} onChange={(e) => setPrice(e.target.value)} required />
-        </div>
-        <div>
-          <Label>Category *</Label>
-          <Select value={category} onValueChange={setCategory} required>
-            <SelectTrigger><SelectValue placeholder="Select category" /></SelectTrigger>
-            <SelectContent>
-              {CATEGORIES.map((c) => (
-                <SelectItem key={c} value={c.toLowerCase()}>{c}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div>
-          <Label>Stock</Label>
-          <label className="flex items-center gap-2 mt-2 cursor-pointer">
-            <input type="checkbox" checked={inStock} onChange={(e) => setInStock(e.target.checked)} />
-            <span>In Stock</span>
-          </label>
-        </div>
-        <div>
-          <Label>Images</Label>
-          <div
-            className="mt-2 flex flex-col items-center justify-center rounded-lg border-2 border-dashed p-8 cursor-pointer hover:bg-muted/50"
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => {
-              e.preventDefault();
-              handleFiles({ target: { files: e.dataTransfer.files } } as unknown as React.ChangeEvent<HTMLInputElement>);
-            }}
-          >
-            <input type="file" accept="image/*" multiple className="hidden" id="upload" onChange={handleFiles} />
-            <label htmlFor="upload" className="cursor-pointer flex flex-col items-center gap-2">
-              <Upload className="h-10 w-10 text-muted-foreground" />
-              <span className="text-sm text-muted-foreground">Drag & drop or click to upload</span>
-            </label>
+      <form onSubmit={handleSubmit} className="space-y-6">
+        {/* Basic Info */}
+        <div className="bg-card border rounded-lg p-6 space-y-4">
+          <h2 className="text-xl font-semibold">Product Details</h2>
+
+          <div>
+            <Label htmlFor="name">Product Name *</Label>
+            <Input
+              id="name"
+              placeholder="e.g., Premium Cotton Shirt"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+            />
           </div>
-          {previews.length > 0 && (
-            <div className="mt-4 flex flex-wrap gap-4">
-              {previews.map((url, i) => (
-                <div key={i} className="relative">
-                  <Image src={url} alt="" width={96} height={96} className="h-24 w-24 rounded object-cover" unoptimized />
-                  <button type="button" onClick={() => removeImage(i)} className="absolute -top-2 -right-2 rounded-full bg-destructive text-destructive-foreground p-1">
-                    <X className="h-4 w-4" />
+
+          <div>
+            <Label htmlFor="description">Description *</Label>
+            <textarea
+              id="description"
+              placeholder="Describe your product..."
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="w-full px-3 py-2 border rounded-lg bg-background text-foreground"
+              rows={4}
+              required
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label htmlFor="basePrice">Base Price (₹) *</Label>
+              <Input
+                id="basePrice"
+                type="number"
+                placeholder="999"
+                value={basePrice}
+                onChange={(e) => setBasePrice(e.target.value)}
+                required
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="category">Category *</Label>
+              <select
+                id="category"
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                className="w-full px-3 py-2 border rounded-lg bg-background text-foreground"
+                required
+              >
+                <option value="">Select category</option>
+                {CATEGORIES.map((cat) => (
+                  <option key={cat} value={cat}>
+                    {cat.charAt(0).toUpperCase() + cat.slice(1)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </div>
+
+        {/* Images */}
+        <div className="bg-card border rounded-lg p-6 space-y-4">
+          <h2 className="text-xl font-semibold">Images</h2>
+          <div>
+            <Label htmlFor="imageUrl">Add Image URL</Label>
+            <Input
+              id="imageUrl"
+              type="url"
+              placeholder="https://example.com/image.jpg"
+              onKeyPress={(e) => e.key === "Enter" && handleImageUrl(e as any)}
+              onBlur={(e) => handleImageUrl(e)}
+            />
+          </div>
+          {imageUrls.length > 0 && (
+            <div>
+              <p className="text-sm font-semibold mb-2">Added Images ({imageUrls.length})</p>
+              <div className="space-y-2">
+                {imageUrls.map((url, idx) => (
+                  <div key={idx} className="flex justify-between items-center p-2 bg-muted rounded">
+                    <span className="text-sm truncate">{url}</span>
+                    <button
+                      type="button"
+                      onClick={() => setImageUrls(imageUrls.filter((_, i) => i !== idx))}
+                      className="text-red-600 hover:text-red-700"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Variants */}
+        <div className="bg-card border rounded-lg p-6 space-y-4">
+          <div className="flex justify-between items-center">
+            <h2 className="text-xl font-semibold">Product Variants (Size & Color)</h2>
+            <Button type="button" onClick={handleAddVariant} variant="outline">
+              Add Variant
+            </Button>
+          </div>
+
+          {variants.length === 0 ? (
+            <p className="text-muted-foreground text-sm">Add at least one variant for your product</p>
+          ) : (
+            <div className="space-y-4">
+              {variants.map((variant, idx) => (
+                <div key={idx} className="border rounded-lg p-4 space-y-3 bg-muted/50">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <div>
+                      <Label className="text-sm">Size</Label>
+                      <select
+                        value={variant.size}
+                        onChange={(e) => handleVariantChange(idx, "size", e.target.value)}
+                        className="w-full px-2 py-1 border rounded bg-background text-foreground text-sm"
+                        required
+                      >
+                        <option value="">Select size</option>
+                        {SIZES.map((size) => (
+                          <option key={size} value={size}>
+                            {size}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <Label className="text-sm">Color</Label>
+                      <select
+                        value={variant.color}
+                        onChange={(e) => handleVariantChange(idx, "color", e.target.value)}
+                        className="w-full px-2 py-1 border rounded bg-background text-foreground text-sm"
+                        required
+                      >
+                        <option value="">Select color</option>
+                        {COLORS.map((color) => (
+                          <option key={color} value={color}>
+                            {color}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <Label className="text-sm">Stock</Label>
+                      <Input
+                        type="number"
+                        min="0"
+                        value={variant.stock}
+                        onChange={(e) => handleVariantChange(idx, "stock", parseInt(e.target.value) || 0)}
+                        className="text-sm"
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <Label className="text-sm">Price (₹)</Label>
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={variant.price}
+                        onChange={(e) => handleVariantChange(idx, "price", parseFloat(e.target.value) || 0)}
+                        className="text-sm"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveVariant(idx)}
+                    className="text-red-600 hover:text-red-700 text-sm font-semibold"
+                  >
+                    Remove Variant
                   </button>
                 </div>
               ))}
             </div>
           )}
         </div>
-        <Button type="submit" disabled={loading}>{loading ? "Adding..." : "Add Product"}</Button>
-      </motion.form>
+
+        {/* Actions */}
+        <div className="flex gap-4">
+          <Button type="submit" disabled={loading} className="flex-1">
+            {loading ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Adding...
+              </>
+            ) : (
+              "Add Product"
+            )}
+          </Button>
+          <Button type="button" variant="outline" onClick={() => router.back()}>
+            Cancel
+          </Button>
+        </div>
+      </form>
     </div>
   );
 }
